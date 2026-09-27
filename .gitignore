@@ -1,0 +1,26 @@
+# PlatformIO build and dependency output
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+
+# Compiled firmware and object files
+*.a
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+
+# Editor-generated state
+**/.vscode/
+**/.idea/
+*.code-workspace
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
