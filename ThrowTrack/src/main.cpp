@@ -11,9 +11,9 @@
 #endif
 
 namespace {
-constexpr uint8_t PIN_RST = D2;
+constexpr uint8_t PIN_RST = D4;
 constexpr uint8_t PIN_CS = D3;
-constexpr uint8_t PIN_IRQ = D1;
+constexpr uint8_t PIN_IRQ = D2;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 2000;
 
 uint32_t lastHeartbeatMs = 0;
@@ -54,6 +54,17 @@ char nodeAddress[] = "7D:00:22:EA:82:60:3B:9C";
 #else
 char nodeAddress[] = "82:17:5B:D5:A9:9A:E2:9C";
 constexpr uint16_t ANTENNA_DELAY = 16384;
+constexpr uint8_t PIN_STATUS_LED = D6;
+constexpr uint8_t PIN_BATTERY = D0;
+constexpr float BATTERY_DIVIDER_RATIO = 2.0F;
+constexpr float BATTERY_LOW_V = 3.50F;
+constexpr uint32_t BATTERY_CHECK_INTERVAL_MS = 5000;
+constexpr uint32_t LED_LOW_BATTERY_PERIOD_MS = 1000;
+constexpr uint32_t LED_PULSE_MS = 100;
+bool batteryLow = false;
+bool statusLedOn = false;
+float batteryVoltage = 0.0F;
+uint32_t lastBatteryCheckMs = 0;
 #endif
 
 void onNewRange();
@@ -64,22 +75,34 @@ void updateDisplay(uint32_t now);
 void startMeasurement(uint32_t now);
 void finishMeasurement();
 void printRawSpiDiagnostics();
+#else
+void updateResponderStatus(uint32_t now);
 #endif
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
 
 #ifdef NODE_ROLE_INITIATOR
+  delay(1000);
   Serial.println("ThrowTrack UWB initiator starting");
 #else
   Serial.println("ThrowTrack UWB responder starting");
+  pinMode(PIN_STATUS_LED, OUTPUT);
+  digitalWrite(PIN_STATUS_LED, LOW);
+  for (uint8_t flash = 0; flash < 3; ++flash) {
+    digitalWrite(PIN_STATUS_LED, HIGH);
+    delay(100);
+    digitalWrite(PIN_STATUS_LED, LOW);
+    delay(233);
+  }
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_BATTERY, ADC_11db);
 #endif
 
 #ifdef NODE_ROLE_INITIATOR
   pinMode(PIN_BUTTON, INPUT_PULLUP);
-  Wire.begin(D4, D5);
+  Wire.begin(D7, D5);
   oledReady = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
 
   if (oledReady) {
@@ -105,13 +128,13 @@ void setup() {
   Serial.print("BU01 SPI check: ");
   Serial.println(deviceId);
 
-#ifdef NODE_ROLE_INITIATOR
   if (strncmp(deviceId, "DECA", 4) != 0) {
     Serial.println("BU01 error: invalid DW1000 device ID; ranging disabled");
+#ifdef NODE_ROLE_INITIATOR
     updateDisplay(millis());
+#endif
     return;
   }
-#endif
   DW1000.setAntennaDelay(ANTENNA_DELAY);
   Serial.print("antenna delay: ");
   Serial.println(ANTENNA_DELAY);
@@ -166,6 +189,8 @@ void loop() {
     lastDisplayMs = now;
     updateDisplay(now);
   }
+#else
+  updateResponderStatus(now);
 #endif
 
   if (now - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
@@ -180,7 +205,14 @@ void loop() {
     Serial.print(" | ranges: ");
     Serial.print(rangeCount);
     Serial.print(" | uwb: ");
-    Serial.println(uwbReady ? "ready" : "error");
+    Serial.print(uwbReady ? "ready" : "error");
+
+#ifndef NODE_ROLE_INITIATOR
+    Serial.print(" | battery: ");
+    Serial.print(batteryVoltage, 2);
+    Serial.print(batteryLow ? " V LOW" : " V");
+#endif
+    Serial.println();
 
 #ifdef NODE_ROLE_INITIATOR
     if (!uwbReady) printRawSpiDiagnostics();
@@ -189,6 +221,32 @@ void loop() {
 }
 
 namespace {
+
+#ifndef NODE_ROLE_INITIATOR
+void updateResponderStatus(uint32_t now) {
+  if (lastBatteryCheckMs == 0 ||
+      now - lastBatteryCheckMs >= BATTERY_CHECK_INTERVAL_MS) {
+    lastBatteryCheckMs = now;
+
+    constexpr uint8_t sampleCount = 8;
+    uint32_t millivoltSum = 0;
+    for (uint8_t i = 0; i < sampleCount; ++i) {
+      millivoltSum += analogReadMilliVolts(PIN_BATTERY);
+    }
+
+    const float adcVoltage =
+        static_cast<float>(millivoltSum) / sampleCount / 1000.0F;
+    batteryVoltage = adcVoltage * BATTERY_DIVIDER_RATIO;
+  }
+
+  const bool shouldBeOn =
+      batteryLow && (now % LED_LOW_BATTERY_PERIOD_MS < LED_PULSE_MS);
+  if (shouldBeOn != statusLedOn) {
+    statusLedOn = shouldBeOn;
+    digitalWrite(PIN_STATUS_LED, statusLedOn ? HIGH : LOW);
+  }
+}
+#endif
 
 void onNewRange() {
   ++rangeCount;
